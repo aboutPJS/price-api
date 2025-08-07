@@ -1,0 +1,33 @@
+version: '3.8'
+
+services:
+  price-api:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+    environment:
+      - API_HOST=0.0.0.0
+      - API_PORT=8000
+      - DATABASE_PATH=/app/data/prices.db
+      - LOG_LEVEL=INFO
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-m", "src.health_check"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # Development override - uncomment for development
+  # price-api-dev:
+  #   extends: price-api
+  #   volumes:
+  #     - .:/app
+  #   environment:
+  #     - API_DEBUG=true
+  #     - API_RELOAD=true
+  #     - LOG_LEVEL=DEBUG
+  #   command: ["python", "-m", "src.main", "--reload"]
