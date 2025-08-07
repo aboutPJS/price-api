@@ -12,11 +12,11 @@ from pydantic import BaseModel, Field
 
 class PriceCategory(str, Enum):
     """
-    Price categorization based on 48-hour median total price (today + tomorrow).
+    Price categorization based on 48-hour tertiles (today + tomorrow).
     """
-    CHEAPEST = "CHEAPEST"  # Single cheapest hour of the 48-hour period
-    CHEAP = "CHEAP"        # Below median total_price
-    EXPENSIVE = "EXPENSIVE"  # Above median total_price
+    AVOID = "AVOID"      # Top 1/3 most expensive (highest total costs)
+    OKAY = "OKAY"        # Middle 1/3 
+    PREFER = "PREFER"    # Bottom 1/3 least expensive (lowest total costs)
 
 
 class PriceRecord(BaseModel):
@@ -43,11 +43,11 @@ class PriceRecord(BaseModel):
         ge=0.0
     )
     median_price: float = Field(
-        description="48-hour median price (today + tomorrow) used for categorization (DKK/kWh)",
+        description="48-hour median price (today + tomorrow) for reference (DKK/kWh)",
         ge=0.0
     )
     category: PriceCategory = Field(
-        description="Price category based on 48-hour median comparison"
+        description="Price category based on 48-hour tertiles (AVOID/OKAY/PREFER)"
     )
     
     class Config:

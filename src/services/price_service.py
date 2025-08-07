@@ -6,7 +6,7 @@ Combines the previous data fetcher, optimizer, and repository into one service.
 from datetime import datetime, timedelta
 from io import StringIO
 import statistics
-from typing import List, Optional
+from typing import List, Optional, Tuple
 from urllib.parse import urlencode
 
 import httpx
@@ -19,6 +19,75 @@ from src.logging_config import get_logger
 from src.models.price import OptimalTimeResponse, PriceCategory, PriceRecord
 
 logger = get_logger(__name__)
+
+
+def _calculate_percentile(sorted_values: List[float], percentile: float) -> float:
+    """
+    Calculate percentile using linear interpolation (like numpy.percentile).
+    
+    Args:
+        sorted_values: List of values sorted in ascending order
+        percentile: Percentile to calculate (0-100)
+    
+    Returns:
+        Interpolated percentile value
+    """
+    if not sorted_values:
+        return 0.0
+    
+    n = len(sorted_values)
+    if n == 1:
+        return sorted_values[0]
+    
+    # Convert percentile (0-100) to index position
+    index = (percentile / 100.0) * (n - 1)
+    
+    # Get the lower and upper indices
+    lower_idx = int(index)
+    upper_idx = min(lower_idx + 1, n - 1)
+    
+    # If index is exactly an integer, return that value
+    if lower_idx == upper_idx:
+        return sorted_values[lower_idx]
+    
+    # Linear interpolation between the two nearest values
+    fraction = index - lower_idx
+    lower_value = sorted_values[lower_idx]
+    upper_value = sorted_values[upper_idx]
+    
+    return lower_value + fraction * (upper_value - lower_value)
+
+
+def _calculate_tertile_boundaries(prices: List[float]) -> Tuple[float, float]:
+    """
+    Calculate tertile boundaries (33rd and 67th percentiles) with proper interpolation.
+    
+    Args:
+        prices: List of price values
+    
+    Returns:
+        Tuple of (tertile_low, tertile_high) boundaries
+    """
+    if not prices:
+        return 0.0, 0.0
+    
+    if len(prices) < 3:
+        # For very small datasets, use min/max as boundaries
+        min_price = min(prices)
+        max_price = max(prices)
+        if min_price == max_price:
+            return min_price, max_price
+        # Split into approximate thirds
+        range_third = (max_price - min_price) / 3.0
+        return min_price + range_third, min_price + 2 * range_third
+    
+    sorted_prices = sorted(prices)
+    
+    # Calculate 33rd and 67th percentiles with interpolation
+    tertile_low = _calculate_percentile(sorted_prices, 33.333)
+    tertile_high = _calculate_percentile(sorted_prices, 66.667)
+    
+    return tertile_low, tertile_high
 
 
 class PriceService:
@@ -139,40 +208,49 @@ class PriceService:
                 })
                 prices_for_categorization.append(total_price)
             
-            # Calculate 48-hour median
+            # Calculate 48-hour median and tertile thresholds
             median_price = 0.0
+            tertile_low = 0.0
+            tertile_high = 0.0
+            
             if prices_for_categorization:
                 try:
+                    # Calculate median for reference
                     median_price = statistics.median(prices_for_categorization)
-                    min_price = min(prices_for_categorization)
+                    
+                    # Calculate tertile boundaries using proper percentile interpolation
+                    tertile_low, tertile_high = _calculate_tertile_boundaries(prices_for_categorization)
+                    
                 except statistics.StatisticsError:
-                    logger.warning("Cannot calculate median from empty price list")
+                    logger.warning("Cannot calculate median from price list")
                     median_price = 0.0
-                    min_price = 0.0
+                    tertile_low = 0.0
+                    tertile_high = 0.0
             else:
                 logger.warning("No price data found for categorization")
-                min_price = 0.0
             
             # Log statistics (only if we have data)
             if prices_for_categorization:
-                logger.debug("Calculated 48-hour statistics",
+                logger.debug("Calculated 48-hour tertile statistics",
                            total_records=len(prices_for_categorization),
                            median_price=f"{median_price:.4f} DKK/kWh",
-                           min_price=f"{min_price:.4f} DKK/kWh",
+                           tertile_low=f"{tertile_low:.4f} DKK/kWh",
+                           tertile_high=f"{tertile_high:.4f} DKK/kWh",
+                           min_price=f"{min(prices_for_categorization):.4f} DKK/kWh",
                            max_price=f"{max(prices_for_categorization):.4f} DKK/kWh")
             
-            # Second pass: create final records with median and categorization
+            # Second pass: create final records with tertile categorization
             records = []
             for temp in temp_records:
-                # Determine category
-                category = PriceCategory.CHEAP
+                # Determine category based on tertiles
+                category = PriceCategory.OKAY  # Default to middle tertile
                 if prices_for_categorization:
-                    if temp['total_price'] == min_price:
-                        category = PriceCategory.CHEAPEST
-                    elif temp['total_price'] <= median_price:
-                        category = PriceCategory.CHEAP
+                    if temp['total_price'] <= tertile_low:
+                        category = PriceCategory.PREFER  # Bottom 1/3 - cheapest
+                    elif temp['total_price'] >= tertile_high:
+                        category = PriceCategory.AVOID   # Top 1/3 - most expensive
                     else:
-                        category = PriceCategory.EXPENSIVE
+                        category = PriceCategory.OKAY    # Middle 1/3
                 
                 record = PriceRecord(
                     timestamp=temp['timestamp'],

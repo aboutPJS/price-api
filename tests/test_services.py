@@ -59,8 +59,8 @@ class TestPriceService:
         assert records[0].transport_taxes == 1.25
         assert records[0].total_price == 2.75
         
-        # Record with price 2.25 should be CHEAPEST
-        assert records[1].category == PriceCategory.CHEAPEST
+        # Record with price 2.25 should be PREFER (lowest in tertile)
+        assert records[1].category == PriceCategory.PREFER
         assert records[1].total_price == 2.25
     
     def test_parse_danish_csv_missing_columns(self, price_service):
@@ -105,7 +105,7 @@ class TestPriceService:
             transport_taxes=1.25,
             total_price=2.25,
             median_price=2.50,
-            category=PriceCategory.CHEAPEST
+            category=PriceCategory.PREFER
         )
         
         with patch('src.database.service.db_service.get_cheapest_hour', new=AsyncMock(return_value=mock_record)) as mock_method:
@@ -124,7 +124,7 @@ class TestPriceService:
             transport_taxes=1.25,
             total_price=2.25,
             median_price=2.50,
-            category=PriceCategory.CHEAP
+            category=PriceCategory.OKAY
         )
         
         with patch('src.database.service.db_service.get_cheapest_sequence_start', new=AsyncMock(return_value=mock_record)) as mock_method:

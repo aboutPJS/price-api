@@ -318,6 +318,16 @@ The service processes Andel Energi CSV data with the following format:
 - **Transport og afgifter**: Grid costs and taxes (DKK/kWh)
 - **Total**: Final price per kWh (DKK/kWh)
 
+### Price Categorization
+
+The service categorizes all price data using a **tertiles-based system** calculated from 48-hour periods (today + tomorrow):
+
+- **PREFER** (Bottom 1/3): Least expensive hours - optimal for energy consumption
+- **OKAY** (Middle 1/3): Moderate prices - acceptable for flexible usage
+- **AVOID** (Top 1/3): Most expensive hours - avoid energy-intensive activities
+
+This categorization provides a more balanced distribution compared to simple median-based approaches, making it easier to identify cost-effective time slots for appliance scheduling.
+
 ## Monitoring
 
 ### Health Checks
