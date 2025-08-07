@@ -3,16 +3,18 @@ version: '3.8'
 services:
   price-api:
     build: .
+    container_name: energy-price-api
     ports:
       - "8000:8000"
     volumes:
-      - ./data:/app/data
-      - ./logs:/app/logs
+      - price_data:/app/data
+      - price_logs:/app/logs
+    env_file:
+      - .env
     environment:
+      # Override specific settings for container
       - API_HOST=0.0.0.0
-      - API_PORT=8000
       - DATABASE_PATH=/app/data/prices.db
-      - LOG_LEVEL=INFO
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "python", "-m", "src.health_check"]
@@ -20,14 +22,17 @@ services:
       timeout: 10s
       retries: 3
       start_period: 40s
+    networks:
+      - price-api-network
 
-  # Development override - uncomment for development
-  # price-api-dev:
-  #   extends: price-api
-  #   volumes:
-  #     - .:/app
-  #   environment:
-  #     - API_DEBUG=true
-  #     - API_RELOAD=true
-  #     - LOG_LEVEL=DEBUG
-  #   command: ["python", "-m", "src.main", "--reload"]
+# Named volumes for data persistence
+volumes:
+  price_data:
+    driver: local
+  price_logs:
+    driver: local
+
+# Network for service isolation
+networks:
+  price-api-network:
+    driver: bridge

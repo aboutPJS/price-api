@@ -29,7 +29,7 @@ class TestPriceService:
         assert "andelenergi.dk" in url
         assert "obexport_format=csv" in url
         assert "obexport_start=2025-08-07" in url
-        assert "obexport_end=2025-08-08" in url
+        assert "obexport_end=2025-08-09" in url  # Updated: now fetches 48 hours (today + tomorrow)
         assert "obexport_region=east" in url
         assert "obexport_product_id=1%231%23TIMEENERGI" in url
     
@@ -97,42 +97,42 @@ class TestPriceService:
                 await price_service._fetch_csv_data("http://example.com/test.csv")
     
     @pytest.mark.asyncio
-    @patch('src.services.price_service.db_service')
-    async def test_get_cheapest_hour_success(self, mock_db_service, price_service):
+    async def test_get_cheapest_hour_success(self, price_service):
         """Test successful cheapest hour request."""
         mock_record = PriceRecord(
             timestamp=datetime(2025, 8, 7, 14, 0, 0),
             spot_price=1.0,
             transport_taxes=1.25,
             total_price=2.25,
+            median_price=2.50,
             category=PriceCategory.CHEAPEST
         )
-        mock_db_service.get_cheapest_hour.return_value = mock_record
         
-        result = await price_service.get_cheapest_hour(within_hours=24)
-        
-        assert isinstance(result, OptimalTimeResponse)
-        assert result.start_time == datetime(2025, 8, 7, 14, 0, 0)
-        mock_db_service.get_cheapest_hour.assert_called_once_with(24)
+        with patch('src.database.service.db_service.get_cheapest_hour', new=AsyncMock(return_value=mock_record)) as mock_method:
+            result = await price_service.get_cheapest_hour(within_hours=24)
+            
+            assert isinstance(result, OptimalTimeResponse)
+            assert result.start_time == datetime(2025, 8, 7, 14, 0, 0)
+            mock_method.assert_called_once_with(24)
     
     @pytest.mark.asyncio
-    @patch('src.services.price_service.db_service')
-    async def test_get_cheapest_sequence_start_success(self, mock_db_service, price_service):
+    async def test_get_cheapest_sequence_start_success(self, price_service):
         """Test successful cheapest sequence request."""
         mock_record = PriceRecord(
             timestamp=datetime(2025, 8, 7, 23, 0, 0),
             spot_price=1.0,
             transport_taxes=1.25,
             total_price=2.25,
+            median_price=2.50,
             category=PriceCategory.CHEAP
         )
-        mock_db_service.get_cheapest_sequence_start.return_value = mock_record
         
-        result = await price_service.get_cheapest_sequence_start(duration=3, within_hours=12)
-        
-        assert isinstance(result, OptimalTimeResponse)
-        assert result.start_time == datetime(2025, 8, 7, 23, 0, 0)
-        mock_db_service.get_cheapest_sequence_start.assert_called_once_with(3, 12)
+        with patch('src.database.service.db_service.get_cheapest_sequence_start', new=AsyncMock(return_value=mock_record)) as mock_method:
+            result = await price_service.get_cheapest_sequence_start(duration=3, within_hours=12)
+            
+            assert isinstance(result, OptimalTimeResponse)
+            assert result.start_time == datetime(2025, 8, 7, 23, 0, 0)
+            mock_method.assert_called_once_with(3, 12)
     
     @pytest.mark.asyncio
     async def test_get_cheapest_sequence_start_invalid_duration(self, price_service):

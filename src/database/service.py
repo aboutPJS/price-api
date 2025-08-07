@@ -17,7 +17,7 @@ from src.models.price import PriceCategory, PriceRecord
 
 logger = get_logger(__name__)
 
-CURRENT_SCHEMA_VERSION = 1
+CURRENT_SCHEMA_VERSION = 2
 
 
 class DatabaseService:
@@ -81,7 +81,7 @@ class DatabaseService:
             )
         """)
         
-        # Price records table
+        # Price records table with median_price column
         await db.execute("""
             CREATE TABLE price_records (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -89,6 +89,7 @@ class DatabaseService:
                 spot_price REAL NOT NULL,
                 transport_taxes REAL NOT NULL,
                 total_price REAL NOT NULL,
+                median_price REAL NOT NULL,
                 category TEXT NOT NULL,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(timestamp)
@@ -110,25 +111,71 @@ class DatabaseService:
     
     async def _run_migrations(self, db: aiosqlite.Connection, from_version: int) -> None:
         """Run database migrations from current version to latest."""
-        # Future migrations would go here
-        # if from_version < 2:
-        #     await self._migrate_to_v2(db)
-        #     await self._set_schema_version(db, 2)
-        pass
+        if from_version < 2:
+            await self._migrate_to_v2(db)
+            await self._set_schema_version(db, 2)
+    
+    async def _migrate_to_v2(self, db: aiosqlite.Connection) -> None:
+        """Migrate to schema version 2: Add median_price column."""
+        logger.info("Running migration to schema version 2")
+        
+        # Add median_price column with default value
+        await db.execute("""
+            ALTER TABLE price_records 
+            ADD COLUMN median_price REAL DEFAULT 0.0
+        """)
+        
+        # Update existing records with a default median (could be improved later)
+        await db.execute("""
+            UPDATE price_records 
+            SET median_price = total_price 
+            WHERE median_price = 0.0
+        """)
+        
+        await db.commit()
+        logger.info("Migration to schema version 2 completed")
     
     async def save_price_records(self, records: List[PriceRecord]) -> None:
-        """Save price records to database."""
+        """Save price records to database with duplicate detection and price change logging."""
         if not records:
             return
             
         try:
             async with aiosqlite.connect(self.database_path) as db:
+                price_changes = []
+                
+                # Check for existing records and detect price changes
+                for record in records:
+                    cursor = await db.execute(
+                        "SELECT total_price FROM price_records WHERE timestamp = ?",
+                        (record.timestamp.isoformat(),)
+                    )
+                    existing = await cursor.fetchone()
+                    
+                    if existing and existing[0] != record.total_price:
+                        price_changes.append({
+                            'timestamp': record.timestamp,
+                            'old_price': existing[0],
+                            'new_price': record.total_price
+                        })
+                
+                # Log price changes
+                for change in price_changes:
+                    logger.info(
+                        "Price updated for timestamp",
+                        timestamp=change['timestamp'].strftime('%d.%m.%Y %H:%M'),
+                        old_price=f"{change['old_price']:.4f} DKK/kWh",
+                        new_price=f"{change['new_price']:.4f} DKK/kWh"
+                    )
+                
+                # Save all records
                 records_data = [
                     (
                         record.timestamp.isoformat(),
                         record.spot_price,
                         record.transport_taxes,
                         record.total_price,
+                        record.median_price,
                         record.category.value,
                     )
                     for record in records
@@ -136,12 +183,16 @@ class DatabaseService:
                 
                 await db.executemany("""
                     INSERT OR REPLACE INTO price_records 
-                    (timestamp, spot_price, transport_taxes, total_price, category)
-                    VALUES (?, ?, ?, ?, ?)
+                    (timestamp, spot_price, transport_taxes, total_price, median_price, category)
+                    VALUES (?, ?, ?, ?, ?, ?)
                 """, records_data)
                 
                 await db.commit()
-                logger.debug("Saved price records", count=len(records))
+                logger.info(
+                    "Saved price records", 
+                    count=len(records),
+                    price_changes=len(price_changes)
+                )
                 
         except Exception as e:
             logger.error("Failed to save price records", error=str(e))
@@ -156,7 +207,7 @@ class DatabaseService:
                 if within_hours is not None:
                     end_time = now + timedelta(hours=within_hours)
                     query = """
-                        SELECT timestamp, spot_price, transport_taxes, total_price, category
+                        SELECT timestamp, spot_price, transport_taxes, total_price, median_price, category
                         FROM price_records 
                         WHERE timestamp >= ? AND timestamp <= ?
                         ORDER BY total_price ASC, timestamp ASC
@@ -165,7 +216,7 @@ class DatabaseService:
                     params = (now.isoformat(), end_time.isoformat())
                 else:
                     query = """
-                        SELECT timestamp, spot_price, transport_taxes, total_price, category
+                        SELECT timestamp, spot_price, transport_taxes, total_price, median_price, category
                         FROM price_records 
                         WHERE timestamp >= ?
                         ORDER BY total_price ASC, timestamp ASC
@@ -184,7 +235,8 @@ class DatabaseService:
                     spot_price=row[1],
                     transport_taxes=row[2],
                     total_price=row[3],
-                    category=PriceCategory(row[4]),
+                    median_price=row[4],
+                    category=PriceCategory(row[5]),
                 )
                 
         except NoPriceDataError:
@@ -199,40 +251,46 @@ class DatabaseService:
             async with aiosqlite.connect(self.database_path) as db:
                 now = datetime.now()
                 
-                # Build time constraint
-                time_constraint = "WHERE p1.timestamp >= ?"
+                # Initialize params list
                 params = [now.isoformat()]
                 
+                # Base condition for time filtering
+                base_condition = "timestamp >= ?"
                 if within_hours is not None:
                     end_time = now + timedelta(hours=within_hours)
-                    time_constraint += " AND p1.timestamp <= ?"
+                    base_condition += " AND timestamp <= ?"
                     params.append(end_time.isoformat())
                 
-                # Find cheapest consecutive sequence
+                # Fixed query: use julianday for proper datetime arithmetic
                 query = f"""
-                    WITH sequence_sums AS (
-                        SELECT 
-                            p1.timestamp,
-                            p1.spot_price,
-                            p1.transport_taxes,
-                            p1.total_price,
-                            p1.category,
-                            (
-                                SELECT SUM(p2.total_price)
-                                FROM price_records p2
-                                WHERE p2.timestamp >= p1.timestamp 
-                                AND p2.timestamp < datetime(p1.timestamp, '+{duration} hours')
-                                GROUP BY p1.timestamp
-                                HAVING COUNT(p2.timestamp) = {duration}
-                            ) as sequence_total
-                        FROM price_records p1
-                        {time_constraint}
-                        ORDER BY p1.timestamp
+                    WITH hourly_prices AS (
+                        SELECT timestamp, spot_price, transport_taxes, total_price, median_price, category,
+                               julianday(timestamp) as jd
+                        FROM price_records 
+                        WHERE {base_condition}
+                        ORDER BY timestamp
+                    ),
+                    sequence_sums AS (
+                        SELECT h1.timestamp, h1.spot_price, h1.transport_taxes, h1.total_price, h1.median_price, h1.category,
+                               (
+                                   SELECT SUM(h2.total_price)
+                                   FROM hourly_prices h2
+                                   WHERE h2.jd >= h1.jd
+                                     AND h2.jd < (h1.jd + {duration}/24.0)
+                               ) as sequence_sum,
+                               (
+                                   SELECT COUNT(*)
+                                   FROM hourly_prices h3
+                                   WHERE h3.jd >= h1.jd
+                                     AND h3.jd < (h1.jd + {duration}/24.0)
+                               ) as sequence_count
+                        FROM hourly_prices h1
                     )
-                    SELECT timestamp, spot_price, transport_taxes, total_price, category
-                    FROM sequence_sums 
-                    WHERE sequence_total IS NOT NULL
-                    ORDER BY sequence_total ASC, timestamp ASC
+                    SELECT timestamp, spot_price, transport_taxes, total_price, median_price, category
+                    FROM sequence_sums
+                    WHERE sequence_count = {duration}
+                      AND sequence_sum IS NOT NULL
+                    ORDER BY sequence_sum ASC, timestamp ASC
                     LIMIT 1
                 """
                 
@@ -247,7 +305,8 @@ class DatabaseService:
                     spot_price=row[1],
                     transport_taxes=row[2],
                     total_price=row[3],
-                    category=PriceCategory(row[4]),
+                    median_price=row[4] if row[4] is not None else row[3],
+                    category=PriceCategory(row[5]),
                 )
                 
         except NoSequenceFoundError:
@@ -285,7 +344,8 @@ class DatabaseService:
             
             async with aiosqlite.connect(self.database_path) as db:
                 cursor = await db.execute("""
-                    SELECT timestamp, spot_price, transport_taxes, total_price, category
+                    SELECT timestamp, spot_price, transport_taxes, total_price, 
+                           COALESCE(median_price, total_price) as median_price, category
                     FROM price_records 
                     WHERE timestamp >= ?
                     ORDER BY timestamp ASC
@@ -299,7 +359,8 @@ class DatabaseService:
                         spot_price=row[1],
                         transport_taxes=row[2],
                         total_price=row[3],
-                        category=PriceCategory(row[4]),
+                        median_price=row[4],
+                        category=PriceCategory(row[5]),
                     )
                     for row in rows
                 ]

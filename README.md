@@ -57,7 +57,9 @@ Service health status for monitoring.
 
 ## Quick Start
 
-### Using Docker Compose (Recommended)
+### Using Docker (Recommended for Production)
+
+#### Development with Docker
 
 1. **Clone and configure:**
    ```bash
@@ -67,37 +69,112 @@ Service health status for monitoring.
    # Edit .env with your settings
    ```
 
-2. **Start the service:**
+2. **Start development environment:**
    ```bash
    docker-compose up -d
    ```
+   This uses the default `docker-compose.yml` with `docker-compose.override.yml` for development features.
 
 3. **Verify installation:**
    ```bash
    curl http://localhost:8000/api/v1/health
    ```
 
-### Local Development
+#### Production Docker Deployment
 
-1. **Install dependencies:**
+1. **Configure for production:**
+   ```bash
+   cp .env.example .env
+   # Edit .env with production values
+   mkdir -p data logs
+   ```
+
+2. **Deploy with production settings:**
+   ```bash
+   docker-compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+   ```
+
+3. **Verify deployment:**
+   ```bash
+   curl http://localhost:8000/api/v1/health
+   docker logs energy-price-api-prod
+   ```
+
+### Step-by-Step Local Development Setup
+
+Follow these steps to run the service locally for development:
+
+1. **Activate virtual environment**
+   ```bash
+   source venv/bin/activate
+   ```
+
+2. **Install dependencies**
    ```bash
    python -m pip install -r requirements.txt
    ```
 
-2. **Initialize database:**
+3. **Initialize database** (creates SQLite DB and schema)
    ```bash
    python scripts/dev.py init-db
    ```
 
-3. **Fetch initial data:**
+4. **Start the API server** (automatically starts scheduler)
+   ```bash
+   python -m src.main
+   ```
+   The API will be available at `http://localhost:8000`
+
+5. **Manual price data fetch** (optional)
    ```bash
    python scripts/dev.py fetch-prices
    ```
 
-4. **Start the service:**
+6. **Run tests** (ensure API correctness)
    ```bash
-   python -m src.main
+   python -m pytest tests/ -v
    ```
+
+7. **Additional management commands**
+   ```bash
+   python scripts/dev.py show-prices          # Show recent prices
+   python scripts/dev.py test-optimization    # Test optimization algorithms
+   python scripts/dev.py cleanup-data         # Clean old data
+   python scripts/dev.py show-config          # Show current settings
+   python scripts/dev.py test-api             # Test Andel Energi connection
+   ```
+
+## Docker vs Local Development
+
+### Key Differences
+
+| Aspect | Local Development | Docker Deployment |
+|--------|-------------------|-------------------|
+| **Database Initialization** | Manual `python scripts/dev.py init-db` | Automatic on container startup |
+| **Dependencies** | Manual venv management | Containerized with all dependencies |
+| **Data Persistence** | Files in `./data/` directory | Docker volumes (persistent across restarts) |
+| **Environment Config** | Reads from `.env` or defaults | Uses `.env` + container environment overrides |
+| **Process Management** | Single Python process | Container with proper signal handling |
+| **Health Checks** | Manual via scripts | Built-in Docker health checks |
+| **Log Management** | Console/file output | Structured Docker logging with rotation |
+| **Resource Limits** | System resources | Configurable CPU/memory limits |
+| **Security** | Runs as current user | Runs as non-root user in container |
+| **Networking** | Direct host access | Isolated container network |
+
+### When to Use Each
+
+**Use Local Development When:**
+- Actively developing and debugging code
+- Need direct access to development tools
+- Running tests and code quality checks
+- Using database inspection scripts frequently
+
+**Use Docker When:**
+- Deploying to production
+- Need consistent environments
+- Want automatic health checks and restarts
+- Integrating with other containerized services
+- Need resource isolation and limits
 
 ## Configuration
 
@@ -140,6 +217,30 @@ python scripts/dev.py show-config
 
 # Test API connectivity
 python scripts/dev.py test-api
+```
+
+### Database Inspection Tools
+
+Use the database inspection script to monitor and debug price data:
+
+```bash
+# Show database schema and structure
+python scripts/db_inspect.py schema
+
+# Show database statistics
+python scripts/db_inspect.py stats
+
+# Show recent data (default: 12 hours)
+python scripts/db_inspect.py recent [HOURS]
+
+# Check for missing hourly data
+python scripts/db_inspect.py gaps
+
+# Vacuum database to reclaim space
+python scripts/db_inspect.py vacuum
+
+# Run all checks
+python scripts/db_inspect.py all
 ```
 
 ### Running Tests
@@ -289,6 +390,25 @@ docker run -d \
 - Increase httpx timeout settings
 - Check network connectivity
 - Verify DNS resolution
+
+### Docker Management Commands
+
+When running in Docker, you can still use the development and inspection scripts:
+
+```bash
+# Execute commands inside running container
+docker exec energy-price-api-prod python scripts/dev.py show-prices
+docker exec energy-price-api-prod python scripts/db_inspect.py stats
+
+# Manual price fetch
+docker exec energy-price-api-prod python scripts/dev.py fetch-prices
+
+# Database inspection
+docker exec energy-price-api-prod python scripts/db_inspect.py all
+
+# Interactive shell in container
+docker exec -it energy-price-api-prod /bin/bash
+```
 
 ### Log Analysis
 

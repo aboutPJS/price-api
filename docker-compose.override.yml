@@ -1,0 +1,22 @@
+version: '3.8'
+
+# Development overrides for docker-compose.yml
+# This file is automatically loaded when running docker-compose commands
+services:
+  price-api:
+    # Mount source code for development
+    volumes:
+      - .:/app
+      - price_data:/app/data
+      - price_logs:/app/logs
+    environment:
+      - API_DEBUG=true
+      - API_RELOAD=true
+      - LOG_LEVEL=DEBUG
+      - LOG_FORMAT=text
+    # Override command to enable hot reload
+    command: ["python", "-m", "src.main"]
+    # Add development port mapping for debugging
+    ports:
+      - "8000:8000"
+      - "5678:5678"  # For debugpy if needed

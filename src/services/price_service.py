@@ -5,6 +5,7 @@ Combines the previous data fetcher, optimizer, and repository into one service.
 
 from datetime import datetime, timedelta
 from io import StringIO
+import statistics
 from typing import List, Optional
 from urllib.parse import urlencode
 
@@ -28,20 +29,23 @@ class PriceService:
         self.timeout = 30
     
     async def fetch_and_store_daily_prices(self, target_date: datetime = None) -> int:
-        """Fetch daily prices from Andel Energi and store them."""
+        """Fetch 48-hour prices from Andel Energi (today + tomorrow) and store them."""
         if target_date is None:
-            target_date = datetime.now().date() + timedelta(days=1)
+            target_date = datetime.now().date()
         
         try:
-            # Build URL and fetch data
+            # Build URL and fetch data (today + tomorrow)
             url = self._build_csv_url(target_date)
             csv_content = await self._fetch_csv_data(url)
             
-            # Parse and store
+            # Parse and store with 48h median calculation
             records = self._parse_danish_csv(csv_content)
             await db_service.save_price_records(records)
             
-            logger.info("Fetched and stored daily prices", date=target_date.isoformat(), count=len(records))
+            logger.info("Fetched and stored 48-hour prices", 
+                       start_date=target_date.isoformat(), 
+                       count=len(records),
+                       median_price=f"{records[0].median_price:.4f} DKK/kWh" if records else "N/A")
             return len(records)
             
         except Exception as e:
@@ -68,9 +72,10 @@ class PriceService:
         return await db_service.cleanup_old_records(settings.data_retention_days)
     
     def _build_csv_url(self, target_date: datetime) -> str:
-        """Build Andel Energi CSV URL."""
+        """Build Andel Energi CSV URL for 48 hours (today + tomorrow)."""
         start_date = datetime.combine(target_date, datetime.min.time())
-        end_date = start_date + timedelta(days=1)
+        # End date should be day after tomorrow to include tomorrow's 23:00 hour
+        end_date = start_date + timedelta(days=2)
         
         params = {
             'obexport_format': 'csv',
@@ -80,6 +85,11 @@ class PriceService:
             'obexport_tax': settings.andel_energi_tax,
             'obexport_product_id': settings.andel_energi_product_id,
         }
+        
+        logger.debug("Built CSV URL", 
+                    start_date=start_date.strftime('%Y-%m-%d'),
+                    end_date=end_date.strftime('%Y-%m-%d'),
+                    url_params=params)
         
         return f"{self.base_url}?{urlencode(params)}"
     
@@ -113,36 +123,66 @@ class PriceService:
             records = []
             prices_for_categorization = []
             
-            # First pass: parse records
+            # First pass: parse basic data
+            temp_records = []
             for _, row in df.iterrows():
                 timestamp = self._parse_danish_datetime(row['Start'].strip())
                 spot_price = float(str(row['Elpris']).replace(',', '.'))
                 transport_taxes = float(str(row['Transport og afgifter']).replace(',', '.'))
                 total_price = float(str(row['Total']).replace(',', '.'))
                 
-                record = PriceRecord(
-                    timestamp=timestamp,
-                    spot_price=spot_price,
-                    transport_taxes=transport_taxes,
-                    total_price=total_price,
-                    category=PriceCategory.CHEAP,  # Will be updated
-                )
-                
-                records.append(record)
+                temp_records.append({
+                    'timestamp': timestamp,
+                    'spot_price': spot_price,
+                    'transport_taxes': transport_taxes,
+                    'total_price': total_price
+                })
                 prices_for_categorization.append(total_price)
             
-            # Second pass: categorize
+            # Calculate 48-hour median
+            median_price = 0.0
             if prices_for_categorization:
-                median_price = sorted(prices_for_categorization)[len(prices_for_categorization) // 2]
-                min_price = min(prices_for_categorization)
-                
-                for record in records:
-                    if record.total_price == min_price:
-                        record.category = PriceCategory.CHEAPEST
-                    elif record.total_price <= median_price:
-                        record.category = PriceCategory.CHEAP
+                try:
+                    median_price = statistics.median(prices_for_categorization)
+                    min_price = min(prices_for_categorization)
+                except statistics.StatisticsError:
+                    logger.warning("Cannot calculate median from empty price list")
+                    median_price = 0.0
+                    min_price = 0.0
+            else:
+                logger.warning("No price data found for categorization")
+                min_price = 0.0
+            
+            # Log statistics (only if we have data)
+            if prices_for_categorization:
+                logger.debug("Calculated 48-hour statistics",
+                           total_records=len(prices_for_categorization),
+                           median_price=f"{median_price:.4f} DKK/kWh",
+                           min_price=f"{min_price:.4f} DKK/kWh",
+                           max_price=f"{max(prices_for_categorization):.4f} DKK/kWh")
+            
+            # Second pass: create final records with median and categorization
+            records = []
+            for temp in temp_records:
+                # Determine category
+                category = PriceCategory.CHEAP
+                if prices_for_categorization:
+                    if temp['total_price'] == min_price:
+                        category = PriceCategory.CHEAPEST
+                    elif temp['total_price'] <= median_price:
+                        category = PriceCategory.CHEAP
                     else:
-                        record.category = PriceCategory.EXPENSIVE
+                        category = PriceCategory.EXPENSIVE
+                
+                record = PriceRecord(
+                    timestamp=temp['timestamp'],
+                    spot_price=temp['spot_price'],
+                    transport_taxes=temp['transport_taxes'],
+                    total_price=temp['total_price'],
+                    median_price=median_price,
+                    category=category
+                )
+                records.append(record)
             
             return records
             

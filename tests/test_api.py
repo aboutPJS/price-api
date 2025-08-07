@@ -4,7 +4,7 @@ Tests the FastAPI route handlers and response formats.
 """
 
 from datetime import datetime
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -34,9 +34,9 @@ class TestCheapestHourEndpoint:
     def test_cheapest_hour_success(self, mock_price_service, test_client):
         """Test successful cheapest hour request."""
         # Mock the service response
-        mock_price_service.get_cheapest_hour.return_value = OptimalTimeResponse(
+        mock_price_service.get_cheapest_hour = AsyncMock(return_value=OptimalTimeResponse(
             start_time=datetime(2025, 8, 7, 14, 0, 0)
-        )
+        ))
         
         response = test_client.get("/api/v1/cheapest-hour")
         
@@ -50,9 +50,9 @@ class TestCheapestHourEndpoint:
     @patch("src.api.routes.price_service")
     def test_cheapest_hour_with_within_hours(self, mock_price_service, test_client):
         """Test cheapest hour request with within_hours parameter."""
-        mock_price_service.get_cheapest_hour.return_value = OptimalTimeResponse(
+        mock_price_service.get_cheapest_hour = AsyncMock(return_value=OptimalTimeResponse(
             start_time=datetime(2025, 8, 7, 14, 0, 0)
-        )
+        ))
         
         response = test_client.get("/api/v1/cheapest-hour?within_hours=12")
         
@@ -62,7 +62,7 @@ class TestCheapestHourEndpoint:
     @patch("src.api.routes.price_service")
     def test_cheapest_hour_no_data(self, mock_price_service, test_client):
         """Test cheapest hour request when no data is available."""
-        mock_price_service.get_cheapest_hour.side_effect = NoPriceDataError("No data available")
+        mock_price_service.get_cheapest_hour = AsyncMock(side_effect=NoPriceDataError("No data available"))
         
         response = test_client.get("/api/v1/cheapest-hour")
         
@@ -87,9 +87,9 @@ class TestCheapestSequenceStartEndpoint:
     @patch("src.api.routes.price_service")
     def test_cheapest_sequence_success(self, mock_price_service, test_client):
         """Test successful cheapest sequence request."""
-        mock_price_service.get_cheapest_sequence_start.return_value = OptimalTimeResponse(
+        mock_price_service.get_cheapest_sequence_start = AsyncMock(return_value=OptimalTimeResponse(
             start_time=datetime(2025, 8, 7, 23, 0, 0)
-        )
+        ))
         
         response = test_client.get("/api/v1/cheapest-sequence-start?duration=3")
         
@@ -103,9 +103,9 @@ class TestCheapestSequenceStartEndpoint:
     @patch("src.api.routes.price_service")
     def test_cheapest_sequence_with_within_hours(self, mock_price_service, test_client):
         """Test cheapest sequence request with within_hours parameter."""
-        mock_price_service.get_cheapest_sequence_start.return_value = OptimalTimeResponse(
+        mock_price_service.get_cheapest_sequence_start = AsyncMock(return_value=OptimalTimeResponse(
             start_time=datetime(2025, 8, 7, 23, 0, 0)
-        )
+        ))
         
         response = test_client.get("/api/v1/cheapest-sequence-start?duration=3&within_hours=12")
         
@@ -115,7 +115,7 @@ class TestCheapestSequenceStartEndpoint:
     @patch("src.api.routes.price_service")
     def test_cheapest_sequence_no_data(self, mock_price_service, test_client):
         """Test cheapest sequence request when no suitable sequence is found."""
-        mock_price_service.get_cheapest_sequence_start.side_effect = NoSequenceFoundError("No suitable sequence found")
+        mock_price_service.get_cheapest_sequence_start = AsyncMock(side_effect=NoSequenceFoundError("No suitable sequence found"))
         
         response = test_client.get("/api/v1/cheapest-sequence-start?duration=3")
         
