@@ -251,23 +251,28 @@ class DatabaseService:
             async with aiosqlite.connect(self.database_path) as db:
                 now = datetime.now()
                 
-                # Initialize params list
-                params = [now.isoformat()]
-                
-                # Base condition for time filtering
-                base_condition = "timestamp >= ?"
+                # Calculate the end time for the search window
                 if within_hours is not None:
-                    end_time = now + timedelta(hours=within_hours)
-                    base_condition += " AND timestamp <= ?"
-                    params.append(end_time.isoformat())
+                    search_end_time = now + timedelta(hours=within_hours)
+                else:
+                    # Default to a reasonable future window (48 hours)
+                    search_end_time = now + timedelta(hours=48)
                 
-                # Fixed query: use julianday for proper datetime arithmetic
+                # For sequence to be valid, we need to ensure:
+                # 1. Start time is in the future (>= now)
+                # 2. End time of sequence is within our search window
+                # 3. We have complete hourly data for the entire sequence
+                sequence_end_cutoff = search_end_time - timedelta(hours=duration-1)
+                
+                params = [now.isoformat(), sequence_end_cutoff.isoformat()]
+                
+                # Improved query with proper sequence validation
                 query = f"""
                     WITH hourly_prices AS (
                         SELECT timestamp, spot_price, transport_taxes, total_price, median_price, category,
                                julianday(timestamp) as jd
                         FROM price_records 
-                        WHERE {base_condition}
+                        WHERE timestamp >= ? AND timestamp <= ?
                         ORDER BY timestamp
                     ),
                     sequence_sums AS (
@@ -276,20 +281,27 @@ class DatabaseService:
                                    SELECT SUM(h2.total_price)
                                    FROM hourly_prices h2
                                    WHERE h2.jd >= h1.jd
-                                     AND h2.jd < (h1.jd + {duration}/24.0)
+                                     AND h2.jd <= (h1.jd + ({duration}-1)/24.0)
                                ) as sequence_sum,
                                (
                                    SELECT COUNT(*)
                                    FROM hourly_prices h3
                                    WHERE h3.jd >= h1.jd
-                                     AND h3.jd < (h1.jd + {duration}/24.0)
-                               ) as sequence_count
+                                     AND h3.jd <= (h1.jd + ({duration}-1)/24.0)
+                               ) as sequence_count,
+                               (
+                                   SELECT MAX(h4.timestamp)
+                                   FROM hourly_prices h4
+                                   WHERE h4.jd >= h1.jd
+                                     AND h4.jd <= (h1.jd + ({duration}-1)/24.0)
+                               ) as sequence_end_time
                         FROM hourly_prices h1
                     )
                     SELECT timestamp, spot_price, transport_taxes, total_price, median_price, category
                     FROM sequence_sums
                     WHERE sequence_count = {duration}
                       AND sequence_sum IS NOT NULL
+                      AND sequence_end_time IS NOT NULL
                     ORDER BY sequence_sum ASC, timestamp ASC
                     LIMIT 1
                 """
