@@ -459,20 +459,96 @@ docker run -d \
 - Check network connectivity
 - Verify DNS resolution
 
+### Docker Rebuilding and Troubleshooting
+
+**⚠️ CRITICAL: Docker uses static images!** Unlike running Python directly, Docker containers contain a snapshot of your code at build time. When you make code changes, you **must rebuild** the Docker image.
+
+#### Symptoms of Using an Old Docker Image
+- Latest features/bug fixes are missing from the container
+- Code changes don't appear when testing via Docker
+- Getting different results between local Python and Docker
+- Container returns results from days/weeks ago
+
+#### How to Rebuild Your Docker Image
+
+**Method 1: Standard Rebuild (Production)**
+```bash
+# Stop containers
+docker-compose -f docker-compose.yml -f docker-compose.prod.yml down
+
+# Rebuild with latest code
+docker-compose -f docker-compose.yml -f docker-compose.prod.yml build --no-cache
+
+# Start with new image
+docker-compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+```
+
+**Method 2: Complete Clean Rebuild (if changes aren't showing)**
+```bash
+# Stop and clean everything
+docker-compose -f docker-compose.yml -f docker-compose.prod.yml down
+docker system prune -f
+
+# Force complete rebuild from scratch
+docker-compose -f docker-compose.yml -f docker-compose.prod.yml build --no-cache --pull
+
+# Start fresh
+docker-compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+```
+
+**Method 3: Quick One-Command Rebuild**
+```bash
+# Stop, rebuild, and start in one command
+docker-compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+```
+
+**For Development Setup:**
+```bash
+# Standard development rebuild
+docker-compose down
+docker-compose build --no-cache
+docker-compose up -d
+```
+
+#### Verify Your Changes Are Included
+
+```bash
+# Check when image was built
+docker images | grep energy-price
+
+# Test if latest code is loaded
+docker exec energy-price-api-prod python -c "
+from src.utils.time_utils import get_next_complete_hour
+print('✅ Latest code is loaded!')
+"
+
+# Compare results between local and Docker (should be similar)
+echo "Testing local Python:"
+python -c "import asyncio; from src.services.price_service import price_service; print('Local result:', asyncio.run(price_service.get_cheapest_hour()).start_time)"
+
+echo "Testing Docker:"
+docker exec energy-price-api-prod python -c "import asyncio; from src.services.price_service import price_service; print('Docker result:', asyncio.run(price_service.get_cheapest_hour()).start_time)"
+```
+
+**If results are still different after rebuild:**
+- This is normal! Local and Docker may have different databases
+- Both should return times in the future (not past hours)
+- The specific time may differ based on available data in each database
+
 ### Docker Management Commands
 
 When running in Docker, you can still use the development scripts:
 
 ```bash
 # Execute commands inside running container
-docker exec energy-price-api python scripts/dev.py show-prices
-docker exec energy-price-api python scripts/dev.py fetch-prices
+docker exec energy-price-api-prod python scripts/dev.py show-prices
+docker exec energy-price-api-prod python scripts/dev.py fetch-prices
 
 # Database inspection via direct PostgreSQL connection
 docker exec -it energy-price-db psql -U priceapi -d energy_prices
 
 # Interactive shell in API container
-docker exec -it energy-price-api /bin/bash
+docker exec -it energy-price-api-prod /bin/bash
 ```
 
 ### Log Analysis

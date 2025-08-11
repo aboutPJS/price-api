@@ -14,6 +14,7 @@ from src.config import settings
 from src.exceptions import DatabaseError, NoPriceDataError, NoSequenceFoundError
 from src.logging_config import get_logger
 from src.models.price import PriceCategory, PriceRecord
+from src.utils.time_utils import get_next_complete_hour
 
 logger = get_logger(__name__)
 
@@ -275,10 +276,11 @@ class DatabaseService:
         try:
             pool = await self._get_pool()
             async with pool.acquire() as conn:
-                now = datetime.now()
+                # Use next complete hour to exclude partially completed hours
+                search_start_time = get_next_complete_hour()
                 
                 if within_hours is not None:
-                    end_time = now + timedelta(hours=within_hours)
+                    end_time = search_start_time + timedelta(hours=within_hours)
                     query = """
                         SELECT timestamp, spot_price, transport_taxes, total_price, median_price, category
                         FROM price_records 
@@ -286,7 +288,7 @@ class DatabaseService:
                         ORDER BY total_price ASC, timestamp ASC
                         LIMIT 1
                     """
-                    row = await conn.fetchrow(query, now, end_time)
+                    row = await conn.fetchrow(query, search_start_time, end_time)
                 else:
                     query = """
                         SELECT timestamp, spot_price, transport_taxes, total_price, median_price, category
@@ -295,7 +297,7 @@ class DatabaseService:
                         ORDER BY total_price ASC, timestamp ASC
                         LIMIT 1
                     """
-                    row = await conn.fetchrow(query, now)
+                    row = await conn.fetchrow(query, search_start_time)
                 
                 if not row:
                     raise NoPriceDataError("No price data available for the specified timeframe")
@@ -320,17 +322,18 @@ class DatabaseService:
         try:
             pool = await self._get_pool()
             async with pool.acquire() as conn:
-                now = datetime.now()
+                # Use next complete hour to exclude partially completed hours
+                search_start_time = get_next_complete_hour()
                 
                 # Calculate the end time for the search window
                 if within_hours is not None:
-                    search_end_time = now + timedelta(hours=within_hours)
+                    search_end_time = search_start_time + timedelta(hours=within_hours)
                 else:
                     # Default to a reasonable future window (48 hours)
-                    search_end_time = now + timedelta(hours=48)
+                    search_end_time = search_start_time + timedelta(hours=48)
                 
                 # For sequence to be valid, we need to ensure:
-                # 1. Start time is in the future (>= now)
+                # 1. Start time is in the future (>= search_start_time)
                 # 2. End time of sequence is within our search window
                 # 3. We have complete hourly data for the entire sequence
                 sequence_end_cutoff = search_end_time - timedelta(hours=duration-1)
@@ -367,7 +370,7 @@ class DatabaseService:
                     LIMIT 1
                 """
                 
-                row = await conn.fetchrow(query, now, sequence_end_cutoff, duration)
+                row = await conn.fetchrow(query, search_start_time, sequence_end_cutoff, duration)
                 
                 if not row:
                     raise NoSequenceFoundError(f"No suitable {duration}-hour sequence found")
