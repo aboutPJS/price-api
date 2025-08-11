@@ -18,6 +18,7 @@ from src.database.service import db_service
 from src.exceptions import DataFetchError, NoPriceDataError, NoSequenceFoundError
 from src.logging_config import get_logger
 from src.models.price import OptimalTimeResponse, PriceCategory, PriceRecord
+from src.utils.time_utils import calculate_time_until
 
 logger = get_logger(__name__)
 
@@ -122,20 +123,22 @@ class PriceService:
             logger.error("Failed to fetch daily prices", error=str(e), date=target_date.isoformat() if target_date else None)
             raise DataFetchError(f"Failed to fetch prices: {e}")
     
-    async def get_cheapest_hour(self, within_hours: Optional[int] = None) -> OptimalTimeResponse:
+    async def get_cheapest_hour(self, within_hours: Optional[int] = None, format_type: str = "hours") -> OptimalTimeResponse:
         """Find the cheapest hour."""
         record = await db_service.get_cheapest_hour(within_hours)
+        time_until = calculate_time_until(record.timestamp, format_type)
         logger.debug("Found cheapest hour", start_time=record.timestamp.isoformat(), price=record.total_price)
-        return OptimalTimeResponse(start_time=record.timestamp)
+        return OptimalTimeResponse(start_time=record.timestamp, time_until=time_until)
     
-    async def get_cheapest_sequence_start(self, duration: int, within_hours: Optional[int] = None) -> OptimalTimeResponse:
+    async def get_cheapest_sequence_start(self, duration: int, within_hours: Optional[int] = None, format_type: str = "hours") -> OptimalTimeResponse:
         """Find the start of cheapest consecutive sequence."""
         if duration <= 0:
             raise ValueError("Duration must be positive")
         
         record = await db_service.get_cheapest_sequence_start(duration, within_hours)
+        time_until = calculate_time_until(record.timestamp, format_type)
         logger.debug("Found cheapest sequence", start_time=record.timestamp.isoformat(), duration=duration)
-        return OptimalTimeResponse(start_time=record.timestamp)
+        return OptimalTimeResponse(start_time=record.timestamp, time_until=time_until)
     
     async def cleanup_old_data(self) -> int:
         """Clean up old price records."""

@@ -6,7 +6,7 @@ Defines the structure for price records and API response formats.
 from datetime import datetime
 from decimal import Decimal
 from enum import Enum
-from typing import Optional
+from typing import Optional, Union
 
 from pydantic import BaseModel, Field
 
@@ -65,6 +65,9 @@ class OptimalTimeResponse(BaseModel):
     """
     start_time: datetime = Field(
         description="ISO format timestamp for optimal start time"
+    )
+    time_until: Union[str, int] = Field(
+        description="Time until start_time in 'HH:MM' format or minutes (based on format parameter)"
     )
     
     class Config:

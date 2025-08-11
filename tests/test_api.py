@@ -35,7 +35,8 @@ class TestCheapestHourEndpoint:
         """Test successful cheapest hour request."""
         # Mock the service response
         mock_price_service.get_cheapest_hour = AsyncMock(return_value=OptimalTimeResponse(
-            start_time=datetime(2025, 8, 7, 14, 0, 0)
+            start_time=datetime(2025, 8, 7, 14, 0, 0),
+            time_until="03:30"
         ))
         
         response = test_client.get("/api/v1/cheapest-hour")
@@ -45,19 +46,20 @@ class TestCheapestHourEndpoint:
         
         assert "start_time" in data
         assert data["start_time"] == "2025-08-07T14:00:00"
-        mock_price_service.get_cheapest_hour.assert_called_once_with(None)
+        mock_price_service.get_cheapest_hour.assert_called_once_with(None, "hours")
     
     @patch("src.api.routes.price_service")
     def test_cheapest_hour_with_within_hours(self, mock_price_service, test_client):
         """Test cheapest hour request with within_hours parameter."""
         mock_price_service.get_cheapest_hour = AsyncMock(return_value=OptimalTimeResponse(
-            start_time=datetime(2025, 8, 7, 14, 0, 0)
+            start_time=datetime(2025, 8, 7, 14, 0, 0),
+            time_until="03:30"
         ))
         
         response = test_client.get("/api/v1/cheapest-hour?within_hours=12")
         
         assert response.status_code == 200
-        mock_price_service.get_cheapest_hour.assert_called_once_with(12)
+        mock_price_service.get_cheapest_hour.assert_called_once_with(12, "hours")
     
     @patch("src.api.routes.price_service")
     def test_cheapest_hour_no_data(self, mock_price_service, test_client):
@@ -88,7 +90,8 @@ class TestCheapestSequenceStartEndpoint:
     def test_cheapest_sequence_success(self, mock_price_service, test_client):
         """Test successful cheapest sequence request."""
         mock_price_service.get_cheapest_sequence_start = AsyncMock(return_value=OptimalTimeResponse(
-            start_time=datetime(2025, 8, 7, 23, 0, 0)
+            start_time=datetime(2025, 8, 7, 23, 0, 0),
+            time_until="09:00"
         ))
         
         response = test_client.get("/api/v1/cheapest-sequence-start?duration=3")
@@ -98,19 +101,20 @@ class TestCheapestSequenceStartEndpoint:
         
         assert "start_time" in data
         assert data["start_time"] == "2025-08-07T23:00:00"
-        mock_price_service.get_cheapest_sequence_start.assert_called_once_with(3, None)
+        mock_price_service.get_cheapest_sequence_start.assert_called_once_with(3, None, "hours")
     
     @patch("src.api.routes.price_service")
     def test_cheapest_sequence_with_within_hours(self, mock_price_service, test_client):
         """Test cheapest sequence request with within_hours parameter."""
         mock_price_service.get_cheapest_sequence_start = AsyncMock(return_value=OptimalTimeResponse(
-            start_time=datetime(2025, 8, 7, 23, 0, 0)
+            start_time=datetime(2025, 8, 7, 23, 0, 0),
+            time_until="09:00"
         ))
         
         response = test_client.get("/api/v1/cheapest-sequence-start?duration=3&within_hours=12")
         
         assert response.status_code == 200
-        mock_price_service.get_cheapest_sequence_start.assert_called_once_with(3, 12)
+        mock_price_service.get_cheapest_sequence_start.assert_called_once_with(3, 12, "hours")
     
     @patch("src.api.routes.price_service")
     def test_cheapest_sequence_no_data(self, mock_price_service, test_client):

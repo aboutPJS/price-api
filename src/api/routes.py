@@ -38,6 +38,11 @@ async def get_cheapest_hour(
         description="Look ahead window in hours. If not specified, uses all available predictions.",
         ge=1,
         le=168  # Max 1 week ahead
+    ),
+    format: str = Query(
+        default="hours",
+        description="Time format: 'hours' for HH:MM format, 'minutes' for integer minutes",
+        pattern="^(hours|minutes)$"
     )
 ):
     """
@@ -56,7 +61,7 @@ async def get_cheapest_hour(
         HTTPException: 404 if no data is available, 500 for server errors.
     """
     try:
-        result = await price_service.get_cheapest_hour(within_hours)
+        result = await price_service.get_cheapest_hour(within_hours, format)
         return result
         
     except NoPriceDataError as e:
@@ -81,6 +86,11 @@ async def get_cheapest_sequence_start(
         description="Look ahead window in hours. If not specified, uses all available predictions.",
         ge=1,
         le=168  # Max 1 week ahead
+    ),
+    format: str = Query(
+        default="hours",
+        description="Time format: 'hours' for HH:MM format, 'minutes' for integer minutes",
+        pattern="^(hours|minutes)$"
     )
 ):
     """
@@ -107,7 +117,7 @@ async def get_cheapest_sequence_start(
                 detail="Duration cannot be longer than the look ahead window"
             )
         
-        result = await price_service.get_cheapest_sequence_start(duration, within_hours)
+        result = await price_service.get_cheapest_sequence_start(duration, within_hours, format)
         return result
         
     except HTTPException:
