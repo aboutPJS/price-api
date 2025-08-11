@@ -17,7 +17,7 @@ from src.models.price import PriceCategory, PriceRecord
 
 logger = get_logger(__name__)
 
-CURRENT_SCHEMA_VERSION = 2
+CURRENT_SCHEMA_VERSION = 3
 
 
 class DatabaseService:
@@ -126,6 +126,9 @@ class DatabaseService:
         if from_version < 2:
             await self._migrate_to_v2(conn)
             await self._set_schema_version(conn, 2)
+        if from_version < 3:
+            await self._migrate_to_v3(conn)
+            await self._set_schema_version(conn, 3)
     
     async def _migrate_to_v2(self, conn: asyncpg.Connection) -> None:
         """Migrate to schema version 2: Add median_price column."""
@@ -154,6 +157,49 @@ class DatabaseService:
             """)
         
         logger.info("Migration to schema version 2 completed")
+    
+    async def _migrate_to_v3(self, conn: asyncpg.Connection) -> None:
+        """Migrate to schema version 3: Remove constraints to allow negative prices."""
+        logger.info("Running migration to schema version 3")
+        
+        # Drop existing CHECK constraints that prevent negative prices
+        # We need to drop and recreate the constraints to allow negative values
+        
+        # First, find all CHECK constraints on the price_records table
+        constraints = await conn.fetch("""
+            SELECT conname 
+            FROM pg_constraint 
+            WHERE conrelid = 'price_records'::regclass 
+            AND contype = 'c'
+            AND conname LIKE '%_check'
+        """)
+        
+        # Drop constraints that restrict price values
+        for constraint in constraints:
+            constraint_name = constraint['conname']
+            if any(field in constraint_name for field in ['spot_price', 'total_price', 'median_price']):
+                await conn.execute(f"ALTER TABLE price_records DROP CONSTRAINT IF EXISTS {constraint_name}")
+                logger.info(f"Dropped constraint: {constraint_name}")
+        
+        # Add back only the constraint for transport_taxes (should remain non-negative)
+        # Check if constraint already exists first
+        transport_constraint_exists = await conn.fetchval("""
+            SELECT EXISTS (
+                SELECT 1 FROM pg_constraint 
+                WHERE conrelid = 'price_records'::regclass 
+                AND conname = 'price_records_transport_taxes_check'
+                AND contype = 'c'
+            )
+        """)
+        
+        if not transport_constraint_exists:
+            await conn.execute("""
+                ALTER TABLE price_records 
+                ADD CONSTRAINT price_records_transport_taxes_check 
+                CHECK (transport_taxes >= 0)
+            """)
+        
+        logger.info("Migration to schema version 3 completed - negative prices now allowed")
     
     async def save_price_records(self, records: List[PriceRecord]) -> None:
         """Save price records to database with duplicate detection and price change logging."""

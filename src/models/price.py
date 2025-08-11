@@ -4,6 +4,7 @@ Defines the structure for price records and API response formats.
 """
 
 from datetime import datetime
+from decimal import Decimal
 from enum import Enum
 from typing import Optional
 
@@ -30,21 +31,22 @@ class PriceRecord(BaseModel):
     timestamp: datetime = Field(
         description="Parsed timestamp from 'Start' field (Danish format: DD.MM.YYYY - HH:MM)"
     )
-    spot_price: float = Field(
-        description="Raw energy price from 'Elpris' field (DKK/kWh)",
-        ge=0.0
+    spot_price: Decimal = Field(
+        description="Raw energy price from 'Elpris' field (DKK/kWh) - can be negative in some markets",
+        decimal_places=6
     )
-    transport_taxes: float = Field(
+    transport_taxes: Decimal = Field(
         description="Grid costs and taxes from 'Transport og afgifter' field (DKK/kWh)",
-        ge=0.0
+        ge=0.0,  # Transport taxes should always be non-negative
+        decimal_places=6
     )
-    total_price: float = Field(
-        description="Final price per kWh from 'Total' field (DKK/kWh)",
-        ge=0.0
+    total_price: Decimal = Field(
+        description="Final price per kWh from 'Total' field (DKK/kWh) - can be negative with very low spot prices",
+        decimal_places=6
     )
-    median_price: float = Field(
+    median_price: Decimal = Field(
         description="48-hour median price (today + tomorrow) for reference (DKK/kWh)",
-        ge=0.0
+        decimal_places=6
     )
     category: PriceCategory = Field(
         description="Price category based on 48-hour tertiles (AVOID/OKAY/PREFER)"

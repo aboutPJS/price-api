@@ -4,6 +4,7 @@ Combines the previous data fetcher, optimizer, and repository into one service.
 """
 
 from datetime import datetime, timedelta
+from decimal import Decimal
 from io import StringIO
 import statistics
 from typing import List, Optional, Tuple
@@ -21,26 +22,26 @@ from src.models.price import OptimalTimeResponse, PriceCategory, PriceRecord
 logger = get_logger(__name__)
 
 
-def _calculate_percentile(sorted_values: List[float], percentile: float) -> float:
+def _calculate_percentile(sorted_values: List[Decimal], percentile: float) -> Decimal:
     """
     Calculate percentile using linear interpolation (like numpy.percentile).
     
     Args:
-        sorted_values: List of values sorted in ascending order
+        sorted_values: List of Decimal values sorted in ascending order
         percentile: Percentile to calculate (0-100)
     
     Returns:
-        Interpolated percentile value
+        Interpolated percentile value as Decimal
     """
     if not sorted_values:
-        return 0.0
+        return Decimal('0.0')
     
     n = len(sorted_values)
     if n == 1:
         return sorted_values[0]
     
     # Convert percentile (0-100) to index position
-    index = (percentile / 100.0) * (n - 1)
+    index = (Decimal(str(percentile)) / Decimal('100.0')) * Decimal(str(n - 1))
     
     # Get the lower and upper indices
     lower_idx = int(index)
@@ -51,25 +52,25 @@ def _calculate_percentile(sorted_values: List[float], percentile: float) -> floa
         return sorted_values[lower_idx]
     
     # Linear interpolation between the two nearest values
-    fraction = index - lower_idx
+    fraction = index - Decimal(str(lower_idx))
     lower_value = sorted_values[lower_idx]
     upper_value = sorted_values[upper_idx]
     
     return lower_value + fraction * (upper_value - lower_value)
 
 
-def _calculate_tertile_boundaries(prices: List[float]) -> Tuple[float, float]:
+def _calculate_tertile_boundaries(prices: List[Decimal]) -> Tuple[Decimal, Decimal]:
     """
     Calculate tertile boundaries (33rd and 67th percentiles) with proper interpolation.
     
     Args:
-        prices: List of price values
+        prices: List of Decimal price values
     
     Returns:
-        Tuple of (tertile_low, tertile_high) boundaries
+        Tuple of (tertile_low, tertile_high) boundaries as Decimals
     """
     if not prices:
-        return 0.0, 0.0
+        return Decimal('0.0'), Decimal('0.0')
     
     if len(prices) < 3:
         # For very small datasets, use min/max as boundaries
@@ -78,7 +79,7 @@ def _calculate_tertile_boundaries(prices: List[float]) -> Tuple[float, float]:
         if min_price == max_price:
             return min_price, max_price
         # Split into approximate thirds
-        range_third = (max_price - min_price) / 3.0
+        range_third = (max_price - min_price) / Decimal('3.0')
         return min_price + range_third, min_price + 2 * range_third
     
     sorted_prices = sorted(prices)
@@ -192,13 +193,14 @@ class PriceService:
             records = []
             prices_for_categorization = []
             
-            # First pass: parse basic data
+            # First pass: parse basic data using Decimal for currency precision
             temp_records = []
             for _, row in df.iterrows():
                 timestamp = self._parse_danish_datetime(row['Start'].strip())
-                spot_price = float(str(row['Elpris']).replace(',', '.'))
-                transport_taxes = float(str(row['Transport og afgifter']).replace(',', '.'))
-                total_price = float(str(row['Total']).replace(',', '.'))
+                # Parse Danish decimal format and convert to Decimal for exact currency arithmetic
+                spot_price = Decimal(str(row['Elpris']).replace(',', '.'))
+                transport_taxes = Decimal(str(row['Transport og afgifter']).replace(',', '.'))
+                total_price = Decimal(str(row['Total']).replace(',', '.'))
                 
                 temp_records.append({
                     'timestamp': timestamp,
@@ -208,24 +210,25 @@ class PriceService:
                 })
                 prices_for_categorization.append(total_price)
             
-            # Calculate 48-hour median and tertile thresholds
-            median_price = 0.0
-            tertile_low = 0.0
-            tertile_high = 0.0
+            # Calculate 48-hour median and tertile thresholds using Decimal
+            median_price = Decimal('0.0')
+            tertile_low = Decimal('0.0')
+            tertile_high = Decimal('0.0')
             
             if prices_for_categorization:
                 try:
-                    # Calculate median for reference
-                    median_price = statistics.median(prices_for_categorization)
+                    # Calculate median for reference (convert to float for statistics, then back to Decimal)
+                    float_prices = [float(p) for p in prices_for_categorization]
+                    median_price = Decimal(str(statistics.median(float_prices)))
                     
-                    # Calculate tertile boundaries using proper percentile interpolation
+                    # Calculate tertile boundaries using Decimal precision
                     tertile_low, tertile_high = _calculate_tertile_boundaries(prices_for_categorization)
                     
                 except statistics.StatisticsError:
                     logger.warning("Cannot calculate median from price list")
-                    median_price = 0.0
-                    tertile_low = 0.0
-                    tertile_high = 0.0
+                    median_price = Decimal('0.0')
+                    tertile_low = Decimal('0.0')
+                    tertile_high = Decimal('0.0')
             else:
                 logger.warning("No price data found for categorization")
             
