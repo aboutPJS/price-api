@@ -12,8 +12,8 @@ This service automatically schedules energy-consuming appliances (like dishwashe
 - **Optimization Algorithms**: Find cheapest single hours or consecutive sequences for appliance scheduling
 - **RESTful API**: Simple endpoints for Home Assistant integration
 - **Automated Scheduling**: Daily price data fetching at 2:10 PM Copenhagen time
-- **SQLite Storage**: Efficient local database with automatic cleanup
-- **Docker Ready**: Containerized deployment with health checks
+- **PostgreSQL Storage**: Robust database with automatic cleanup and ACID compliance
+- **Docker Ready**: Multi-container deployment with database and health checks
 
 ## Architecture
 
@@ -102,46 +102,61 @@ Service health status for monitoring.
 
 ### Step-by-Step Local Development Setup
 
-Follow these steps to run the service locally for development:
+For local development, you'll run the API on your machine while using Docker only for the PostgreSQL database:
 
-1. **Activate virtual environment**
+1. **Start PostgreSQL database** (Docker-based, for development)
    ```bash
-   source venv/bin/activate
+   # Start only the database service - this runs PostgreSQL in Docker
+   docker-compose up -d database
+   
+   # Verify database is running
+   docker-compose ps database
    ```
 
-2. **Install dependencies**
+2. **Set up Python environment**
    ```bash
+   # Activate virtual environment
+   source venv/bin/activate
+   
+   # Install dependencies
    python -m pip install -r requirements.txt
    ```
 
-3. **Initialize database** (creates SQLite DB and schema)
+3. **Initialize database schema**
    ```bash
+   # Creates tables and indexes in PostgreSQL
    python scripts/dev.py init-db
    ```
 
-4. **Start the API server** (automatically starts scheduler)
+4. **Start the API server locally**
    ```bash
+   # Runs the API on your machine, connects to Docker PostgreSQL
    python -m src.main
    ```
    The API will be available at `http://localhost:8000`
 
-5. **Manual price data fetch** (optional)
+5. **Development workflow commands**
    ```bash
+   # Manual price data fetch
    python scripts/dev.py fetch-prices
-   ```
-
-6. **Run tests** (ensure API correctness)
-   ```bash
+   
+   # View recent price data  
+   python scripts/dev.py show-prices
+   
+   # Test optimization algorithms
+   python scripts/dev.py test-optimization
+   
+   # Run tests
    python -m pytest tests/ -v
    ```
 
-7. **Additional management commands**
+6. **Database inspection** (connect directly to PostgreSQL)
    ```bash
-   python scripts/dev.py show-prices          # Show recent prices
-   python scripts/dev.py test-optimization    # Test optimization algorithms
-   python scripts/dev.py cleanup-data         # Clean old data
-   python scripts/dev.py show-config          # Show current settings
-   python scripts/dev.py test-api             # Test Andel Energi connection
+   # Connect to PostgreSQL directly for inspection
+   docker exec -it energy-price-db psql -U priceapi -d energy_prices
+   
+   # Or using any PostgreSQL client:
+   # Host: localhost, Port: 5432, User: priceapi, DB: energy_prices
    ```
 
 ## Docker vs Local Development
@@ -184,7 +199,7 @@ Configuration is handled via environment variables. See `.env.example` for all a
 |----------|-------------|---------|
 | `API_HOST` | API host address | `0.0.0.0` |
 | `API_PORT` | API port | `8000` |
-| `DATABASE_PATH` | SQLite database path | `./data/prices.db` |
+| `DATABASE_URL` | PostgreSQL connection URL | `postgresql://priceapi:secure_password_123@localhost:5432/energy_prices` |
 | `ANDEL_ENERGI_REGION` | Energy region (must be "east") | `east` |
 | `FETCH_HOUR` | Daily fetch hour (24h format) | `14` |
 | `FETCH_MINUTE` | Daily fetch minute | `10` |
@@ -219,28 +234,45 @@ python scripts/dev.py show-config
 python scripts/dev.py test-api
 ```
 
-### Database Inspection Tools
+### Database Inspection
 
-Use the database inspection script to monitor and debug price data:
+Connect directly to PostgreSQL for inspection and debugging:
 
 ```bash
-# Show database schema and structure
-python scripts/db_inspect.py schema
+# Connect to PostgreSQL using Docker exec
+docker exec -it energy-price-db psql -U priceapi -d energy_prices
 
-# Show database statistics
-python scripts/db_inspect.py stats
+# Or use any PostgreSQL client with:
+# Host: localhost, Port: 5432, User: priceapi, Password: (from .env), Database: energy_prices
+```
 
-# Show recent data (default: 12 hours)
-python scripts/db_inspect.py recent [HOURS]
+**Useful PostgreSQL queries:**
+```sql
+-- Show recent price data
+SELECT timestamp, total_price, category FROM price_records 
+ORDER BY timestamp DESC LIMIT 10;
 
-# Check for missing hourly data
-python scripts/db_inspect.py gaps
+-- Show database statistics
+SELECT COUNT(*) as total_records, 
+       MIN(timestamp) as earliest, 
+       MAX(timestamp) as latest 
+FROM price_records;
 
-# Vacuum database to reclaim space
-python scripts/db_inspect.py vacuum
+-- Check for gaps in hourly data
+SELECT generate_series(
+  (SELECT MIN(timestamp) FROM price_records),
+  (SELECT MAX(timestamp) FROM price_records),
+  '1 hour'::interval
+) AS expected_hour
+EXCEPT
+SELECT timestamp FROM price_records
+ORDER BY expected_hour;
 
-# Run all checks
-python scripts/db_inspect.py all
+-- Show table schema
+\d price_records
+
+-- Show database size
+SELECT pg_size_pretty(pg_database_size(current_database()));
 ```
 
 ### Running Tests
@@ -403,21 +435,18 @@ docker run -d \
 
 ### Docker Management Commands
 
-When running in Docker, you can still use the development and inspection scripts:
+When running in Docker, you can still use the development scripts:
 
 ```bash
 # Execute commands inside running container
-docker exec energy-price-api-prod python scripts/dev.py show-prices
-docker exec energy-price-api-prod python scripts/db_inspect.py stats
+docker exec energy-price-api python scripts/dev.py show-prices
+docker exec energy-price-api python scripts/dev.py fetch-prices
 
-# Manual price fetch
-docker exec energy-price-api-prod python scripts/dev.py fetch-prices
+# Database inspection via direct PostgreSQL connection
+docker exec -it energy-price-db psql -U priceapi -d energy_prices
 
-# Database inspection
-docker exec energy-price-api-prod python scripts/db_inspect.py all
-
-# Interactive shell in container
-docker exec -it energy-price-api-prod /bin/bash
+# Interactive shell in API container
+docker exec -it energy-price-api /bin/bash
 ```
 
 ### Log Analysis

@@ -24,7 +24,7 @@ async def init_db():
     print("Initializing database...")
     setup_logging()
     await db_service.init_database()
-    print(f"Database initialized at: {settings.database_path}")
+    print(f"Database initialized")
 
 
 async def fetch_prices_manual():
@@ -97,7 +97,7 @@ def show_config():
     print(f"API Host: {settings.api_host}")
     print(f"API Port: {settings.api_port}")
     print(f"Debug Mode: {settings.api_debug}")
-    print(f"Database Path: {settings.database_path}")
+    print(f"Database URL: {settings.database_url}")
     print(f"Fetch Schedule: {settings.fetch_hour}:{settings.fetch_minute:02d} {settings.fetch_timezone}")
     print(f"Data Retention: {settings.data_retention_days} days")
     print(f"Log Level: {settings.log_level}")
@@ -125,23 +125,6 @@ async def test_api_connection():
         print(f"API connection failed: {e}")
 
 
-def test_sequence_fix():
-    """Run sequence query fix validation tests."""
-    import subprocess
-    import sys
-    
-    script_path = Path(__file__).parent / "test_sequence_fix.py"
-    print(f"Running sequence fix test: {script_path}")
-    
-    try:
-        result = subprocess.run([sys.executable, str(script_path)], 
-                               capture_output=False, text=True)
-        if result.returncode != 0:
-            print(f"Test failed with exit code: {result.returncode}")
-        else:
-            print("Sequence tests completed")
-    except Exception as e:
-        print(f"Error running tests: {e}")
 
 
 def main():
@@ -157,7 +140,6 @@ def main():
         print("  cleanup-data      - Clean up old price data")
         print("  show-config       - Display current configuration")
         print("  test-api          - Test Andel Energi API connection")
-        print("  test-sequences    - Test sequence query fix validation")
         return
     
     command = sys.argv[1]
@@ -176,8 +158,6 @@ def main():
         show_config()
     elif command == "test-api":
         asyncio.run(test_api_connection())
-    elif command == "test-sequences":
-        test_sequence_fix()
     else:
         print(f"Unknown command: {command}")
         print("Run without arguments to see available commands")

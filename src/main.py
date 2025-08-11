@@ -31,6 +31,7 @@ async def lifespan(app: FastAPI):
     
     # Shutdown
     await simple_scheduler.stop()
+    await db_service.close()
 
 
 def create_app() -> FastAPI:

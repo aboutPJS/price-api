@@ -1,20 +1,41 @@
-version: '3.8'
-
 services:
+  database:
+    image: postgres:16-alpine
+    container_name: energy-price-db
+    environment:
+      POSTGRES_DB: energy_prices
+      POSTGRES_USER: priceapi
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-secure_password_123}
+    volumes:
+      - price_db_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"  # Expose for development access
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U priceapi -d energy_prices"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    networks:
+      - price-api-network
+
   price-api:
     build: .
     container_name: energy-price-api
     ports:
       - "8000:8000"
     volumes:
-      - price_data:/app/data
       - price_logs:/app/logs
     env_file:
       - .env
     environment:
       # Override specific settings for container
       - API_HOST=0.0.0.0
-      - DATABASE_PATH=/app/data/prices.db
+      - DATABASE_URL=postgresql://priceapi:${DB_PASSWORD:-secure_password_123}@database:5432/energy_prices
+    depends_on:
+      database:
+        condition: service_healthy
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "python", "-m", "src.health_check"]
@@ -27,7 +48,7 @@ services:
 
 # Named volumes for data persistence
 volumes:
-  price_data:
+  price_db_data:
     driver: local
   price_logs:
     driver: local

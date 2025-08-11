@@ -1,14 +1,14 @@
 """
-Simplified database service using pure aiosqlite.
+Database service using PostgreSQL with asyncpg.
 Handles all database operations and migrations in one place.
 """
 
 import asyncio
 from datetime import datetime, timedelta
-from pathlib import Path
 from typing import List, Optional
+from urllib.parse import urlparse
 
-import aiosqlite
+import asyncpg
 
 from src.config import settings
 from src.exceptions import DatabaseError, NoPriceDataError, NoSequenceFoundError
@@ -23,116 +23,136 @@ CURRENT_SCHEMA_VERSION = 2
 class DatabaseService:
     """Unified database service for all price data operations."""
     
-    def __init__(self, database_path: str = None):
-        self.database_path = database_path or settings.database_path
+    def __init__(self, database_url: str = None):
+        self.database_url = database_url or settings.database_url
+        self._pool = None
+    
+    async def _get_pool(self) -> asyncpg.Pool:
+        """Get or create connection pool."""
+        if self._pool is None or self._pool.is_closing():
+            self._pool = await asyncpg.create_pool(
+                self.database_url,
+                min_size=2,
+                max_size=10,
+                command_timeout=60
+            )
+        return self._pool
+    
+    async def close(self):
+        """Close database connection pool."""
+        if self._pool and not self._pool.is_closing():
+            await self._pool.close()
     
     async def init_database(self) -> None:
         """Initialize database with tables, indexes, and migrations."""
         try:
-            # Ensure directory exists
-            database_path = Path(self.database_path)
-            database_path.parent.mkdir(parents=True, exist_ok=True)
-            
-            async with aiosqlite.connect(self.database_path) as db:
+            pool = await self._get_pool()
+            async with pool.acquire() as conn:
                 # Check current schema version
-                current_version = await self._get_schema_version(db)
+                current_version = await self._get_schema_version(conn)
                 
                 if current_version == 0:
                     # Initial setup
-                    await self._create_initial_schema(db)
-                    await self._set_schema_version(db, CURRENT_SCHEMA_VERSION)
+                    await self._create_initial_schema(conn)
+                    await self._set_schema_version(conn, CURRENT_SCHEMA_VERSION)
                     logger.info("Database initialized with schema version", version=CURRENT_SCHEMA_VERSION)
                 elif current_version < CURRENT_SCHEMA_VERSION:
                     # Run migrations
-                    await self._run_migrations(db, current_version)
+                    await self._run_migrations(conn, current_version)
                     logger.info("Database migrated", from_version=current_version, to_version=CURRENT_SCHEMA_VERSION)
                     
         except Exception as e:
             logger.error("Failed to initialize database", error=str(e))
             raise DatabaseError(f"Database initialization failed: {e}")
     
-    async def _get_schema_version(self, db: aiosqlite.Connection) -> int:
+    async def _get_schema_version(self, conn: asyncpg.Connection) -> int:
         """Get current database schema version."""
         try:
-            cursor = await db.execute(
+            result = await conn.fetchval(
                 "SELECT version FROM schema_version ORDER BY version DESC LIMIT 1"
             )
-            result = await cursor.fetchone()
-            return result[0] if result else 0
-        except aiosqlite.OperationalError:
+            return result if result else 0
+        except asyncpg.UndefinedTableError:
             # Table doesn't exist, this is a new database
             return 0
     
-    async def _set_schema_version(self, db: aiosqlite.Connection, version: int) -> None:
+    async def _set_schema_version(self, conn: asyncpg.Connection, version: int) -> None:
         """Set database schema version."""
-        await db.execute(
-            "INSERT INTO schema_version (version, applied_at) VALUES (?, ?)",
-            (version, datetime.now().isoformat())
+        await conn.execute(
+            "INSERT INTO schema_version (version, applied_at) VALUES ($1, $2)",
+            version, datetime.now()
         )
-        await db.commit()
     
-    async def _create_initial_schema(self, db: aiosqlite.Connection) -> None:
+    async def _create_initial_schema(self, conn: asyncpg.Connection) -> None:
         """Create initial database schema."""
         # Schema version tracking
-        await db.execute("""
+        await conn.execute("""
             CREATE TABLE schema_version (
                 version INTEGER PRIMARY KEY,
-                applied_at TEXT NOT NULL
+                applied_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
             )
         """)
         
         # Price records table with median_price column
-        await db.execute("""
+        await conn.execute("""
             CREATE TABLE price_records (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                timestamp TEXT NOT NULL,
-                spot_price REAL NOT NULL,
-                transport_taxes REAL NOT NULL,
-                total_price REAL NOT NULL,
-                median_price REAL NOT NULL,
-                category TEXT NOT NULL,
-                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                id SERIAL PRIMARY KEY,
+                timestamp TIMESTAMP NOT NULL,
+                spot_price DECIMAL(10,6) NOT NULL CHECK (spot_price >= 0),
+                transport_taxes DECIMAL(10,6) NOT NULL CHECK (transport_taxes >= 0),
+                total_price DECIMAL(10,6) NOT NULL CHECK (total_price >= 0),
+                median_price DECIMAL(10,6) NOT NULL CHECK (median_price >= 0),
+                category VARCHAR(10) NOT NULL CHECK (category IN ('AVOID', 'OKAY', 'PREFER')),
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(timestamp)
             )
         """)
         
         # Indexes for performance
-        await db.execute(
+        await conn.execute(
             "CREATE INDEX idx_timestamp ON price_records(timestamp)"
         )
-        await db.execute(
+        await conn.execute(
             "CREATE INDEX idx_total_price ON price_records(total_price)"
         )
-        await db.execute(
+        await conn.execute(
             "CREATE INDEX idx_category ON price_records(category)"
         )
         
-        await db.commit()
+        logger.info("Initial database schema created")
     
-    async def _run_migrations(self, db: aiosqlite.Connection, from_version: int) -> None:
+    async def _run_migrations(self, conn: asyncpg.Connection, from_version: int) -> None:
         """Run database migrations from current version to latest."""
         if from_version < 2:
-            await self._migrate_to_v2(db)
-            await self._set_schema_version(db, 2)
+            await self._migrate_to_v2(conn)
+            await self._set_schema_version(conn, 2)
     
-    async def _migrate_to_v2(self, db: aiosqlite.Connection) -> None:
+    async def _migrate_to_v2(self, conn: asyncpg.Connection) -> None:
         """Migrate to schema version 2: Add median_price column."""
         logger.info("Running migration to schema version 2")
         
-        # Add median_price column with default value
-        await db.execute("""
-            ALTER TABLE price_records 
-            ADD COLUMN median_price REAL DEFAULT 0.0
+        # Check if column exists
+        column_exists = await conn.fetchval("""
+            SELECT EXISTS (
+                SELECT 1 FROM information_schema.columns 
+                WHERE table_name='price_records' AND column_name='median_price'
+            )
         """)
         
-        # Update existing records with a default median (could be improved later)
-        await db.execute("""
-            UPDATE price_records 
-            SET median_price = total_price 
-            WHERE median_price = 0.0
-        """)
+        if not column_exists:
+            # Add median_price column with default value
+            await conn.execute("""
+                ALTER TABLE price_records 
+                ADD COLUMN median_price DECIMAL(10,6) DEFAULT 0.0 NOT NULL
+            """)
+            
+            # Update existing records with a default median
+            await conn.execute("""
+                UPDATE price_records 
+                SET median_price = total_price 
+                WHERE median_price = 0.0
+            """)
         
-        await db.commit()
         logger.info("Migration to schema version 2 completed")
     
     async def save_price_records(self, records: List[PriceRecord]) -> None:
@@ -141,21 +161,21 @@ class DatabaseService:
             return
             
         try:
-            async with aiosqlite.connect(self.database_path) as db:
+            pool = await self._get_pool()
+            async with pool.acquire() as conn:
                 price_changes = []
                 
                 # Check for existing records and detect price changes
                 for record in records:
-                    cursor = await db.execute(
-                        "SELECT total_price FROM price_records WHERE timestamp = ?",
-                        (record.timestamp.isoformat(),)
+                    existing = await conn.fetchval(
+                        "SELECT total_price FROM price_records WHERE timestamp = $1",
+                        record.timestamp
                     )
-                    existing = await cursor.fetchone()
                     
-                    if existing and existing[0] != record.total_price:
+                    if existing and float(existing) != record.total_price:
                         price_changes.append({
                             'timestamp': record.timestamp,
-                            'old_price': existing[0],
+                            'old_price': float(existing),
                             'new_price': record.total_price
                         })
                 
@@ -168,10 +188,10 @@ class DatabaseService:
                         new_price=f"{change['new_price']:.4f} DKK/kWh"
                     )
                 
-                # Save all records
+                # Prepare data for batch insert
                 records_data = [
                     (
-                        record.timestamp.isoformat(),
+                        record.timestamp,
                         record.spot_price,
                         record.transport_taxes,
                         record.total_price,
@@ -181,13 +201,19 @@ class DatabaseService:
                     for record in records
                 ]
                 
-                await db.executemany("""
-                    INSERT OR REPLACE INTO price_records 
+                # Use ON CONFLICT to handle duplicates (PostgreSQL UPSERT)
+                await conn.executemany("""
+                    INSERT INTO price_records 
                     (timestamp, spot_price, transport_taxes, total_price, median_price, category)
-                    VALUES (?, ?, ?, ?, ?, ?)
+                    VALUES ($1, $2, $3, $4, $5, $6)
+                    ON CONFLICT (timestamp) DO UPDATE SET
+                        spot_price = EXCLUDED.spot_price,
+                        transport_taxes = EXCLUDED.transport_taxes,
+                        total_price = EXCLUDED.total_price,
+                        median_price = EXCLUDED.median_price,
+                        category = EXCLUDED.category
                 """, records_data)
                 
-                await db.commit()
                 logger.info(
                     "Saved price records", 
                     count=len(records),
@@ -201,7 +227,8 @@ class DatabaseService:
     async def get_cheapest_hour(self, within_hours: Optional[int] = None) -> PriceRecord:
         """Find the cheapest hour within timeframe."""
         try:
-            async with aiosqlite.connect(self.database_path) as db:
+            pool = await self._get_pool()
+            async with pool.acquire() as conn:
                 now = datetime.now()
                 
                 if within_hours is not None:
@@ -209,34 +236,31 @@ class DatabaseService:
                     query = """
                         SELECT timestamp, spot_price, transport_taxes, total_price, median_price, category
                         FROM price_records 
-                        WHERE timestamp >= ? AND timestamp <= ?
+                        WHERE timestamp >= $1 AND timestamp <= $2
                         ORDER BY total_price ASC, timestamp ASC
                         LIMIT 1
                     """
-                    params = (now.isoformat(), end_time.isoformat())
+                    row = await conn.fetchrow(query, now, end_time)
                 else:
                     query = """
                         SELECT timestamp, spot_price, transport_taxes, total_price, median_price, category
                         FROM price_records 
-                        WHERE timestamp >= ?
+                        WHERE timestamp >= $1
                         ORDER BY total_price ASC, timestamp ASC
                         LIMIT 1
                     """
-                    params = (now.isoformat(),)
-                
-                cursor = await db.execute(query, params)
-                row = await cursor.fetchone()
+                    row = await conn.fetchrow(query, now)
                 
                 if not row:
                     raise NoPriceDataError("No price data available for the specified timeframe")
                 
                 return PriceRecord(
-                    timestamp=datetime.fromisoformat(row[0]),
-                    spot_price=row[1],
-                    transport_taxes=row[2],
-                    total_price=row[3],
-                    median_price=row[4],
-                    category=PriceCategory(row[5]),
+                    timestamp=row['timestamp'],
+                    spot_price=float(row['spot_price']),
+                    transport_taxes=float(row['transport_taxes']),
+                    total_price=float(row['total_price']),
+                    median_price=float(row['median_price']),
+                    category=PriceCategory(row['category']),
                 )
                 
         except NoPriceDataError:
@@ -248,7 +272,8 @@ class DatabaseService:
     async def get_cheapest_sequence_start(self, duration: int, within_hours: Optional[int] = None) -> PriceRecord:
         """Find the start of cheapest consecutive sequence."""
         try:
-            async with aiosqlite.connect(self.database_path) as db:
+            pool = await self._get_pool()
+            async with pool.acquire() as conn:
                 now = datetime.now()
                 
                 # Calculate the end time for the search window
@@ -264,15 +289,12 @@ class DatabaseService:
                 # 3. We have complete hourly data for the entire sequence
                 sequence_end_cutoff = search_end_time - timedelta(hours=duration-1)
                 
-                params = [now.isoformat(), sequence_end_cutoff.isoformat()]
-                
-                # Improved query with proper sequence validation
+                # PostgreSQL query using window functions for sequence analysis
                 query = f"""
                     WITH hourly_prices AS (
-                        SELECT timestamp, spot_price, transport_taxes, total_price, median_price, category,
-                               julianday(timestamp) as jd
+                        SELECT timestamp, spot_price, transport_taxes, total_price, median_price, category
                         FROM price_records 
-                        WHERE timestamp >= ? AND timestamp <= ?
+                        WHERE timestamp >= $1 AND timestamp <= $2
                         ORDER BY timestamp
                     ),
                     sequence_sums AS (
@@ -280,45 +302,37 @@ class DatabaseService:
                                (
                                    SELECT SUM(h2.total_price)
                                    FROM hourly_prices h2
-                                   WHERE h2.jd >= h1.jd
-                                     AND h2.jd <= (h1.jd + ({duration}-1)/24.0)
+                                   WHERE h2.timestamp >= h1.timestamp
+                                     AND h2.timestamp <= (h1.timestamp + INTERVAL '{duration-1} hours')
                                ) as sequence_sum,
                                (
                                    SELECT COUNT(*)
                                    FROM hourly_prices h3
-                                   WHERE h3.jd >= h1.jd
-                                     AND h3.jd <= (h1.jd + ({duration}-1)/24.0)
-                               ) as sequence_count,
-                               (
-                                   SELECT MAX(h4.timestamp)
-                                   FROM hourly_prices h4
-                                   WHERE h4.jd >= h1.jd
-                                     AND h4.jd <= (h1.jd + ({duration}-1)/24.0)
-                               ) as sequence_end_time
+                                   WHERE h3.timestamp >= h1.timestamp
+                                     AND h3.timestamp <= (h1.timestamp + INTERVAL '{duration-1} hours')
+                               ) as sequence_count
                         FROM hourly_prices h1
                     )
                     SELECT timestamp, spot_price, transport_taxes, total_price, median_price, category
                     FROM sequence_sums
-                    WHERE sequence_count = {duration}
+                    WHERE sequence_count = $3
                       AND sequence_sum IS NOT NULL
-                      AND sequence_end_time IS NOT NULL
                     ORDER BY sequence_sum ASC, timestamp ASC
                     LIMIT 1
                 """
                 
-                cursor = await db.execute(query, params)
-                row = await cursor.fetchone()
+                row = await conn.fetchrow(query, now, sequence_end_cutoff, duration)
                 
                 if not row:
                     raise NoSequenceFoundError(f"No suitable {duration}-hour sequence found")
                 
                 return PriceRecord(
-                    timestamp=datetime.fromisoformat(row[0]),
-                    spot_price=row[1],
-                    transport_taxes=row[2],
-                    total_price=row[3],
-                    median_price=row[4] if row[4] is not None else row[3],
-                    category=PriceCategory(row[5]),
+                    timestamp=row['timestamp'],
+                    spot_price=float(row['spot_price']),
+                    transport_taxes=float(row['transport_taxes']),
+                    total_price=float(row['total_price']),
+                    median_price=float(row['median_price']),
+                    category=PriceCategory(row['category']),
                 )
                 
         except NoSequenceFoundError:
@@ -332,14 +346,16 @@ class DatabaseService:
         try:
             cutoff_date = datetime.now() - timedelta(days=retention_days)
             
-            async with aiosqlite.connect(self.database_path) as db:
-                cursor = await db.execute(
-                    "DELETE FROM price_records WHERE timestamp < ?",
-                    (cutoff_date.isoformat(),)
+            pool = await self._get_pool()
+            async with pool.acquire() as conn:
+                result = await conn.execute(
+                    "DELETE FROM price_records WHERE timestamp < $1",
+                    cutoff_date
                 )
-                await db.commit()
                 
-                deleted_count = cursor.rowcount
+                # Extract number from result string like "DELETE 42"
+                deleted_count = int(result.split()[-1]) if result.split()[-1].isdigit() else 0
+                
                 if deleted_count > 0:
                     logger.info("Cleaned up old records", deleted_count=deleted_count)
                 
@@ -354,25 +370,24 @@ class DatabaseService:
         try:
             start_time = datetime.now() - timedelta(hours=hours)
             
-            async with aiosqlite.connect(self.database_path) as db:
-                cursor = await db.execute("""
+            pool = await self._get_pool()
+            async with pool.acquire() as conn:
+                rows = await conn.fetch("""
                     SELECT timestamp, spot_price, transport_taxes, total_price, 
                            COALESCE(median_price, total_price) as median_price, category
                     FROM price_records 
-                    WHERE timestamp >= ?
+                    WHERE timestamp >= $1
                     ORDER BY timestamp ASC
-                """, (start_time.isoformat(),))
-                
-                rows = await cursor.fetchall()
+                """, start_time)
                 
                 return [
                     PriceRecord(
-                        timestamp=datetime.fromisoformat(row[0]),
-                        spot_price=row[1],
-                        transport_taxes=row[2],
-                        total_price=row[3],
-                        median_price=row[4],
-                        category=PriceCategory(row[5]),
+                        timestamp=row['timestamp'],
+                        spot_price=float(row['spot_price']),
+                        transport_taxes=float(row['transport_taxes']),
+                        total_price=float(row['total_price']),
+                        median_price=float(row['median_price']),
+                        category=PriceCategory(row['category']),
                     )
                     for row in rows
                 ]
@@ -384,18 +399,14 @@ class DatabaseService:
     async def health_check(self) -> bool:
         """Check database health."""
         try:
-            database_path = Path(self.database_path)
-            if not database_path.exists():
-                logger.error("Database file does not exist")
-                return False
-            
-            async with aiosqlite.connect(self.database_path) as db:
-                cursor = await db.execute(
-                    "SELECT name FROM sqlite_master WHERE type='table' AND name='price_records'"
+            pool = await self._get_pool()
+            async with pool.acquire() as conn:
+                # Simple connectivity and table existence check
+                result = await conn.fetchval(
+                    "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = 'price_records'"
                 )
-                result = await cursor.fetchone()
                 
-                if not result:
+                if result != 1:
                     logger.error("Price records table not found")
                     return False
                 

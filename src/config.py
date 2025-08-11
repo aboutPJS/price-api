@@ -19,7 +19,10 @@ class Settings(BaseSettings):
     api_reload: bool = Field(default=False, description="Enable auto-reload")
     
     # Database Configuration
-    database_path: str = Field(default="./data/prices.db", description="SQLite database file path")
+    database_url: str = Field(
+        default="postgresql://priceapi:secure_password_123@localhost:5432/energy_prices",
+        description="PostgreSQL database connection URL"
+    )
     
     # Andel Energi API Configuration
     andel_energi_base_url: str = Field(
