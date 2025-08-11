@@ -442,6 +442,20 @@ class DatabaseService:
             logger.error("Failed to get recent records", error=str(e))
             raise DatabaseError(f"Query failed: {e}")
     
+    async def get_latest_record_timestamp(self) -> Optional[datetime]:
+        """Get the timestamp of the most recently created price record."""
+        try:
+            pool = await self._get_pool()
+            async with pool.acquire() as conn:
+                result = await conn.fetchval(
+                    "SELECT created_at FROM price_records ORDER BY created_at DESC LIMIT 1"
+                )
+                return result
+                
+        except Exception as e:
+            logger.error("Failed to get latest record timestamp", error=str(e))
+            return None
+    
     async def health_check(self) -> bool:
         """Check database health."""
         try:

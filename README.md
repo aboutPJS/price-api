@@ -53,7 +53,33 @@ Returns the start time of the cheapest consecutive sequence of specified duratio
 ```http
 GET /api/v1/health
 ```
-Service health status for monitoring.
+Service health status for monitoring with data freshness analysis.
+
+**Response:**
+```json
+{
+  "status": "healthy",
+  "timestamp": "2025-08-11T12:24:03.732783Z",
+  "details": {
+    "service": "energy-price-api",
+    "last_fetch": "2025-08-11T09:50:11.290242+02:00",
+    "last_fetch_utc": "2025-08-11T07:50:11.290242", 
+    "data_age_hours": 2.6,
+    "data_status": "fresh"
+  }
+}
+```
+
+**Data Status Values:**
+- `fresh`: Data is less than 3 hours old ✅
+- `acceptable`: Data is within daily update cycle (3-25 hours) ⚠️
+- `stale`: Data is more than 25 hours old ❌
+- `unknown`: No data available ❓
+
+**Timezone Handling:**
+- `last_fetch`: Timestamp in Copenhagen time (CEST/CET)
+- `last_fetch_utc`: Raw timestamp from database (UTC)
+- Helps monitor if daily price fetching is working properly
 
 ## Quick Start
 

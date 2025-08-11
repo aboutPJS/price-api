@@ -23,12 +23,69 @@ router = APIRouter()
 async def health_check():
     """
     Health check endpoint for monitoring and load balancers.
+    Returns health status with last fetch timestamp to monitor data freshness.
+    
+    The last_fetch timestamp shows when the most recent price data was inserted
+    into the database, helping monitor if the daily data fetching is working properly.
     """
-    return HealthResponse(
-        status="healthy",
-        timestamp=datetime.now(),
-        details={"service": "energy-price-api"}
-    )
+    try:
+        # Get the latest record timestamp to check data freshness
+        last_fetch = await db_service.get_latest_record_timestamp()
+        
+        # Convert to Copenhagen time if available
+        last_fetch_copenhagen = None
+        if last_fetch:
+            # PostgreSQL typically stores CURRENT_TIMESTAMP as UTC
+            # Convert to Copenhagen time for better readability
+            import pytz
+            copenhagen_tz = pytz.timezone('Europe/Copenhagen')
+            
+            # If timestamp is timezone-naive, assume it's UTC
+            if last_fetch.tzinfo is None:
+                last_fetch_utc = last_fetch.replace(tzinfo=pytz.UTC)
+            else:
+                last_fetch_utc = last_fetch.astimezone(pytz.UTC)
+            
+            last_fetch_copenhagen = last_fetch_utc.astimezone(copenhagen_tz)
+        
+        # Calculate data freshness
+        data_age_hours = None
+        data_status = "unknown"
+        
+        if last_fetch_copenhagen:
+            now_copenhagen = datetime.now(copenhagen_tz)
+            data_age = now_copenhagen - last_fetch_copenhagen
+            data_age_hours = round(data_age.total_seconds() / 3600, 1)
+            
+            # Classify data freshness
+            if data_age_hours <= 3:
+                data_status = "fresh"  # Very recent
+            elif data_age_hours <= 25:
+                data_status = "acceptable"  # Within daily update cycle
+            else:
+                data_status = "stale"  # More than a day old
+        
+        details = {
+            "service": "energy-price-api",
+            "last_fetch": last_fetch_copenhagen.isoformat() if last_fetch_copenhagen else None,
+            "last_fetch_utc": last_fetch.isoformat() if last_fetch else None,
+            "data_age_hours": data_age_hours,
+            "data_status": data_status
+        }
+        
+        return HealthResponse(
+            status="healthy",
+            timestamp=datetime.now(),
+            details=details
+        )
+        
+    except Exception as e:
+        logger.error("Health check failed", error=str(e))
+        return HealthResponse(
+            status="unhealthy",
+            timestamp=datetime.now(),
+            details={"service": "energy-price-api", "error": str(e)}
+        )
 
 
 @router.get("/cheapest-hour", response_model=OptimalTimeResponse)
